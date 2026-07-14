@@ -1,4 +1,9 @@
 # FreshRAG
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.38-FF4B4B?logo=streamlit&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-Anthropic%20%7C%20OpenAI%20%7C%20Groq%20%7C%20DeepSeek-412991)
+![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
 **Adaptive Multi-Source Temporal-Aware Hybrid Retrieval-Augmented Generation (AMT-RAG)**
 
