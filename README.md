@@ -68,7 +68,7 @@ freshrag/
 │   ├── credibility.py
 │   └── hybrid_rank.py
 ├── generator/
-│   └── llm.py                  # Anthropic / OpenAI / extractive fallback
+│   └── llm.py                  # Anthropic / OpenAI / Groq / DeepSeek / extractive fallback
 ├── evaluation/
 │   └── metrics.py               # Precision@k, Recall@k, nDCG@k, freshness satisfaction
 ├── streamlit_app.py            # demo UI (calls the FastAPI backend)
@@ -159,25 +159,15 @@ Try asking: *"Why is Apple stock falling today?"* or *"Latest news on the intere
 
 ### Why LLM-first for query understanding
 
-The original version of this project used only a rule-based keyword
-table (domain → one of 6 fixed buckets, matched by substring search).
-That approach has a hard ceiling: it can only recognize what it was
-explicitly told to look for. In testing, `"whats the recent update on
-FIFA"` was misclassified as the `tech` domain (because `"update"` was
-in the tech keyword list) and the word `"whats"` — sent verbatim to the
-search engine — collided with the far more popular query "what's the
-latest WhatsApp update," returning WhatsApp Play Store reviews instead
-of FIFA news entirely. A fixed table cannot be patched to cover every
-such case; there will always be another topic or phrasing it hasn't
-seen.
-
-The LLM-first design fixes this structurally rather than by patching
-the table again: an LLM reasons about the query using general
-knowledge, so it handles arbitrary topics, typos, and unusual phrasing
-without needing to have been told about them in advance — and it
-proposes the ranking weights directly (e.g. "this is about an ongoing
-sports story, weight freshness heavily") instead of mapping to one of a
-handful of pre-defined domains.
+A fixed keyword table has a hard ceiling: it can only recognize domains
+and phrasings it was explicitly told about in advance, and it can
+misfire in hard-to-predict ways (e.g. a generic word like `"update"`
+being tied to one domain can misclassify an unrelated query, and
+raw/unfiltered query text sent to a search engine can collide with an
+unrelated but far more popular query). An LLM has no such ceiling: it
+reasons about arbitrary topics and typos using general knowledge, and
+proposes the ranking weights directly per query instead of mapping to
+one of a handful of pre-defined domains.
 
 The rule-based analyzer still ships and still runs automatically
 whenever no LLM key is configured, so the project's zero-cost,
@@ -192,7 +182,7 @@ Stage 1 the moment you add a free Groq key.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GROQ_API_KEY` / `DEEPSEEK_API_KEY` | empty | Optional: switches query understanding (Stage 1) from rule-based to LLM-based. Groq recommended (genuinely free tier) |
+| `GROQ_API_KEY` / `DEEPSEEK_API_KEY` | empty | Optional: powers query understanding (Stage 1) AND answer generation (Stage 11) via LLM instead of the rule-based/extractive fallbacks. Groq recommended (genuinely free tier) |
 | `QUERY_UNDERSTANDING_MODE` | `auto` | `auto` (LLM if key present, else rule-based) \| `llm` (force, errors without a key) \| `rule-based` (force, for ablation) |
 | `EMBEDDING_MODE` | `tfidf` | `tfidf` (free/instant) or `sentence-transformers` (semantic, needs extra install) |
 | `FRESHNESS_DECAY` | `exponential` | `linear` \| `exponential` \| `logistic` \| `piecewise` |
