@@ -1,0 +1,22 @@
+{
+  "queries": [
+    {"id": "q01", "query": "Why is Apple stock falling today?", "category": "finance-time-sensitive"},
+    {"id": "q02", "query": "Latest news on the US interest rate decision", "category": "finance-time-sensitive"},
+    {"id": "q03", "query": "Bitcoin price today", "category": "finance-time-sensitive"},
+    {"id": "q04", "query": "What caused the 2008 financial crisis?", "category": "finance-static"},
+    {"id": "q05", "query": "Latest FIFA World Cup qualifier results", "category": "sports-time-sensitive"},
+    {"id": "q06", "query": "Who won the most recent Formula 1 race?", "category": "sports-time-sensitive"},
+    {"id": "q07", "query": "History of the Olympic Games", "category": "sports-static"},
+    {"id": "q08", "query": "Weather forecast for tomorrow in Delhi", "category": "weather-time-sensitive"},
+    {"id": "q09", "query": "What is the current government policy on renewable energy", "category": "news-time-sensitive"},
+    {"id": "q10", "query": "Breaking news today", "category": "news-time-sensitive"},
+    {"id": "q11", "query": "What is the Pythagorean theorem?", "category": "general-static"},
+    {"id": "q12", "query": "How does photosynthesis work?", "category": "general-static"},
+    {"id": "q13", "query": "Latest version of Python released", "category": "tech-time-sensitive"},
+    {"id": "q14", "query": "What is the difference between REST and GraphQL?", "category": "tech-static"},
+    {"id": "q15", "query": "Latest iPhone model announced", "category": "tech-time-sensitive"},
+    {"id": "q16", "query": "current inflation rate in India", "category": "finance-time-sensitive"},
+    {"id": "q17", "query": "What is machine learning?", "category": "general-static"},
+    {"id": "q18", "query": "Recent update on Premier League standings", "category": "sports-time-sensitive"}
+  ]
+}
