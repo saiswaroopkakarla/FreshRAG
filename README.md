@@ -1,228 +1,257 @@
 # FreshRAG
+
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.38-FF4B4B?logo=streamlit&logoColor=white)
 ![LLM](https://img.shields.io/badge/LLM-Anthropic%20%7C%20OpenAI%20%7C%20Groq%20%7C%20DeepSeek-412991)
 
+**Adaptive Multi-Source Temporal-Aware Hybrid RAG (AMT-RAG)**
 
-**Adaptive Multi-Source Temporal-Aware Hybrid Retrieval-Augmented Generation (AMT-RAG)**
+Standard RAG systems rank retrieved documents purely by *semantic similarity*. That fails for time-sensitive queries — ask *"Why is Apple stock crashing today?"* and a normal RAG happily hands you a semantically-similar-but-3-year-old earnings article. FreshRAG fixes this by ranking sources with a **hybrid, adaptively-weighted score** across four dimensions: semantic relevance, freshness, authority, and credibility — so time-sensitive queries get time-relevant answers.
 
-Standard RAG systems rank retrieved documents purely by *semantic
-similarity*. That fails for time-sensitive questions: ask "Why is Apple
-stock crashing today?" and a normal RAG happily hands you a very similar
-but 3-year-old article about Apple earnings. FreshRAG ranks sources by a
-**hybrid, adaptively-weighted score** — semantic relevance, freshness,
-authority, and credibility — so time-sensitive queries actually get
-time-relevant answers.
-
-Runs completely free out of the box: DuckDuckGo web search, TF-IDF
-embeddings, and an extractive answer generator all need **zero API
-keys**. Add keys later to upgrade any single component.
+Runs completely **free out of the box**: DuckDuckGo search, TF-IDF embeddings, and an extractive answer generator need zero API keys. Add keys to upgrade any single component.
 
 ---
 
-## Architecture
+## Architecture — 12-Module Pipeline
 
 ```
-Query  ─▶  Query Understanding  ─▶  Adaptive Weight Generator
-                 │                          │
-                 ▼                          │
-        Multi-Source Web Search             │
-                 │                          │
-                 ▼                          │
-     Fetch → Clean → Metadata → Chunk       │
-                 │                          │
-                 ▼                          │
-   Score: Semantic | Freshness | Authority | Credibility
-                 │                          │
-                 └──────────▶  Hybrid Ranker ◀┘
-                                    │
-                                    ▼
-                          Top-K Ranked Sources
-                                    │
-                                    ▼
-                           Answer Generation
+Query
+  │
+  ▼
+[Module 1/2] Query Understanding
+  ├── Primary: LLM-based (Groq → DeepSeek → OpenAI → Anthropic)
+  │   Tolerates typos, open-domain queries, novel topics
+  └── Fallback: Rule-based keyword analyzer — works with zero API keys
+  │
+  ▼
+[Module 3] Adaptive Weight Generator   ◀── Main research contribution
+  │  Adapts ranking weights per query:
+  │  "Apple stock crashing today"   → freshness-heavy (0.50 fresh, 0.30 semantic)
+  │  "What is Pythagorean theorem?" → semantic-heavy  (0.70 semantic, 0.05 fresh)
+  │
+  ▼
+[Module 4] Multi-Source Web Search
+  ├── DuckDuckGo (free, no key — with retry + backend fallback)
+  ├── NewsAPI    (optional)
+  └── Tavily     (optional)
+  │
+  ▼
+[Module 5] Web Fetch
+[Module 6] Metadata Extraction (author, domain, publish date)
+[Module 7] Chunking
+  │
+  ▼
+[Module 8]  Semantic Relevance  — TF-IDF cosine or sentence-transformers
+[Module 9]  Freshness Score     — 4 decay functions: linear / exponential / logistic / piecewise
+[Module 10] Authority Score     — tiered domain list (reuters.com, bbc.com ...) + .gov/.edu/.org boosts
+[Module 11] Credibility Score   — author present (+0.25) + publish date present (+0.25) + HTTPS (+0.10)
+  │
+  ▼
+[Module 12] Hybrid Ranker
+  final = w_sem·semantic + w_fresh·freshness + w_auth·authority + w_cred·credibility
+  │
+  ▼
+Answer Generation
+  ├── LLM synthesis (Anthropic → OpenAI → Groq → DeepSeek, tried in order)
+  └── Extractive fallback — no API key needed, always works
 ```
 
-### Project layout
+---
+
+## Key Design Decisions
+
+**Why adaptive weights?**
+Fixed-weight formulas (`0.45·semantic + 0.30·freshness + ...`) can't serve both time-sensitive and timeless queries well. The weight generator reasons about each specific query to decide how much freshness vs semantic relevance matters — this is the project's core research contribution.
+
+**Why four freshness decay functions?**
+Different use cases have different "staleness curves." The four functions are selectable via `.env` for ablation studies — a clean way to compare them in a paper or report.
+
+**Why pluggable LLM providers?**
+No lock-in. Query understanding and answer generation each independently try their own provider chain. Set whichever key you have; the system uses it automatically and falls back gracefully to free options.
+
+**Why DuckDuckGo as default?**
+Zero cost, no signup, works immediately. Upgrading to NewsAPI or Tavily is a one-line `.env` change.
+
+---
+
+## Freshness Scoring — 4 Decay Functions
+
+All functions take `age_days ≥ 0` and return a score in `[0, 1]`.
+
+| Function | Formula | When to use |
+|---|---|---|
+| Linear | `F = max(0, 1 - age/max_age)` | Gradual staleness (general news) |
+| Exponential | `F = e^(-λ·age)` | Fast-decay (stock prices, sports scores) |
+| Logistic | `F = 1 / (1 + e^(k·(age-midpoint)))` | Sharp "cliff" (election results) |
+| Piecewise | Flat near 1.0, then exponential drop | Mixed freshness requirements |
+
+Documents with no extractable publish date get a **neutral score of 0.5** — not penalised for missing `<meta>` tags.
+
+---
+
+## Credibility Scoring
+
+Lightweight, explainable heuristic — distinct from Authority (which asks "how reputable is this publisher?"). Credibility asks "does *this specific page* show the transparency signals of trustworthy content?":
+
+| Signal | Score contribution |
+|---|---|
+| Baseline | +0.40 |
+| Author name present | +0.25 |
+| Publish date present | +0.25 |
+| HTTPS | +0.10 |
+
+---
+
+## Authority Scoring
+
+Tiered domain reputation lookup:
+
+| Tier | Examples | Score |
+|---|---|---|
+| Tier 1 | reuters.com, bloomberg.com, bbc.com, nature.com, who.int | 1.00 |
+| Tier 2 | cnn.com, forbes.com, techcrunch.com, wired.com | 0.75 |
+| .gov / .gov.in | — | 0.95 |
+| .edu | — | 0.85 |
+| .org | — | 0.60 |
+| Unknown | — | 0.45 |
+
+---
+
+## API Reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Health check |
+| `GET` | `/config` | Active configuration (keys, modes, settings) |
+| `POST` | `/analyze` | Stage 1 only — classify query + generate weights without retrieval |
+| `POST` | `/query` | Full pipeline — retrieve, rank, generate answer |
+
+Full Swagger docs: `http://localhost:8000/docs`
+
+---
+
+## Evaluation Workflow
+
+`experiments/` contains the tooling to produce Results and Comparative Analysis — it does **not** yet contain any completed evaluation. Currently in that folder: `run_experiment.py` and `compute_metrics.py` (both tested end-to-end against a live backend), plus a starter set of 18 test queries. Running the actual evaluation is a manual next step: run the queries, label the results yourself in the generated spreadsheet (relevance judgments — no dataset provides this for open web retrieval), then compute Precision@k, Recall@k, nDCG@k, and freshness-satisfaction automatically, including a side-by-side comparison across configurations. Full walkthrough in `experiments/README.md`.
+
+---
+
+## Repository Structure
 
 ```
-freshrag/
+FreshRAG/
 ├── app/
-│   ├── main.py            # FastAPI app + routes
-│   ├── pipeline.py         # orchestrates the full 12-module flow
-│   ├── config.py            # all settings, loaded from .env
+│   ├── main.py                 # FastAPI app + routes
+│   ├── pipeline.py             # 12-module pipeline orchestrator
+│   ├── config.py               # All settings via .env (pydantic-settings)
 │   └── logging_config.py
 ├── processing/
-│   ├── llm_understanding.py  # ★ Module 1/2 (primary): LLM-based query understanding
-│   ├── query_analyzer.py    # Module 1/2 (fallback): rule-based domain/time-sensitivity
-│   ├── cleaner.py            # strips boilerplate HTML -> main text
-│   ├── metadata.py            # published date / author / domain extraction (incl. JSON-LD)
-│   └── chunker.py              # sliding-window chunking
-├── retriever/
-│   ├── search_api.py         # DuckDuckGo (free) + optional NewsAPI/Tavily
-│   └── web_fetcher.py         # HTTP page download
-├── embedding/
-│   ├── embedder.py            # TF-IDF (default) or sentence-transformers
-│   └── vector_store.py         # in-memory, per-request chunk store
+│   ├── llm_understanding.py    # Module 1/2 primary: LLM query understanding
+│   ├── query_analyzer.py       # Module 1/2 fallback: rule-based classifier
+│   ├── cleaner.py              # HTML → clean text
+│   ├── metadata.py             # Module 6: author, domain, publish date extraction
+│   └── chunker.py              # Module 7: document chunking
 ├── ranking/
-│   ├── weight_generator.py    # ★ the research novelty: adaptive weights
-│   ├── relevance.py
-│   ├── freshness.py            # 4 decay functions: linear/exp/logistic/piecewise
-│   ├── authority.py
-│   ├── credibility.py
-│   └── hybrid_rank.py
+│   ├── weight_generator.py     # ★ Module 3: adaptive weight generation
+│   ├── relevance.py            # Module 8: semantic relevance (wraps embedder)
+│   ├── freshness.py            # Module 9: 4 decay functions
+│   ├── authority.py            # Module 10: tiered domain authority scoring
+│   ├── credibility.py          # Module 11: author + date + HTTPS signals
+│   └── hybrid_rank.py          # Module 12: final score + sort
+├── retriever/
+│   ├── search_api.py           # Module 4: DuckDuckGo + NewsAPI + Tavily
+│   └── web_fetcher.py          # Module 5: fetch + parse web pages
+├── embedding/
+│   ├── embedder.py             # TF-IDF or sentence-transformers
+│   └── vector_store.py         # In-session chunk store + ScoredChunk dataclass
 ├── generator/
-│   └── llm.py                  # Anthropic / OpenAI / Groq / DeepSeek / extractive fallback
+│   └── llm.py                  # Answer generation (4 providers + extractive fallback)
 ├── evaluation/
-│   └── metrics.py               # Precision@k, Recall@k, nDCG@k, freshness satisfaction
-├── streamlit_app.py            # demo UI (calls the FastAPI backend)
-├── requirements.txt
-└── .env.example
+│   └── metrics.py              # Precision@k, Recall@k, nDCG@k, freshness_satisfaction
+├── experiments/
+│   ├── run_experiment.py       # Runs test queries -> labeling spreadsheet
+│   ├── compute_metrics.py      # Labeled spreadsheet -> metrics + comparison table
+│   ├── queries.json            # Starter set of 18 test queries
+│   └── README.md               # Full evaluation workflow walkthrough
+├── utils/
+│   └── exceptions.py
+├── streamlit_app.py            # Demo UI — thin client calling FastAPI backend
+├── run_backend.sh
+├── run_frontend.sh
+├── .env.example
+└── requirements.txt
 ```
 
 ---
 
-## Quickstart
-
-**Requirements:** Python 3.10+
+## Setup
 
 ```bash
-# 1. Create and activate a virtual environment
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-
-# 2. Install dependencies
+git clone https://github.com/saiswaroopkakarla/FreshRAG.git
+cd FreshRAG
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# 3. Copy the env template (works with zero keys filled in)
 cp .env.example .env
+# All API keys are optional — system works with none set
+```
 
-# 4. Start the backend (Terminal 1)
-./run_backend.sh
+---
+
+## Run
+
+```bash
+# Terminal 1 — FastAPI backend
+bash run_backend.sh
 # or: uvicorn app.main:app --reload
 
-# 5. Start the demo UI (Terminal 2)
-./run_frontend.sh
+# Terminal 2 — Streamlit UI
+bash run_frontend.sh
 # or: streamlit run streamlit_app.py
 ```
 
-Then open:
-- **Streamlit demo:** http://localhost:8501
-- **API docs (Swagger):** http://localhost:8000/docs
-
-Try asking: *"Why is Apple stock falling today?"* or *"Latest news on the interest rate decision"*.
+Open `http://localhost:8501` for the UI · `http://localhost:8000/docs` for Swagger.
 
 ---
 
-## How the ranking actually works
+## Configuration (`.env`)
 
-1. **Query Understanding** (`processing/llm_understanding.py`, falling
-   back to `processing/query_analyzer.py`) — **tries an LLM first**
-   (Groq → DeepSeek → OpenAI → Anthropic, whichever key is configured)
-   to determine time-sensitivity, intent, topic, keywords, a cleaned
-   search query, and **the ranking weights directly** — reasoned about
-   per-query rather than looked up from a fixed table. This is
-   deliberately not restricted to a handful of domain buckets, and
-   handles typos and unseen topics the way a human reading the query
-   would. If no key is configured (or the call fails for any reason),
-   it falls back automatically to a rule-based keyword-table analyzer
-   — the system always produces a usable result, it just gets smarter
-   with an LLM key. See "Why LLM-first" below for the reasoning.
-
-2. **Multi-source retrieval** — DuckDuckGo always; NewsAPI is added for
-   time-sensitive finance/news/sports queries if `NEWSAPI_KEY` is set;
-   Tavily adds extra recall if `TAVILY_API_KEY` is set. Results are
-   de-duplicated by URL.
-
-3. **Fetch → Clean → Metadata → Chunk** — downloads each page, strips
-   nav/ads/scripts, extracts `published_date`/`author`/`domain`
-   (checking JSON-LD structured data, `<meta>` tags, and `<time>` tags
-   in that order), and splits long articles into overlapping
-   word-window chunks.
-
-4. **Scoring** — each chunk gets 4 independent scores in [0, 1]:
-   - **Semantic**: cosine similarity (TF-IDF by default; swap to
-     `sentence-transformers` in `.env` for true dense embeddings)
-   - **Freshness**: pick a decay function in `.env` — linear,
-     exponential (default), logistic, or piecewise — and compare them
-     as an ablation study
-   - **Authority**: curated reputable-domain tiers + `.gov`/`.edu` boosts
-   - **Credibility**: presence of author, publish date, HTTPS
-
-5. **Hybrid Ranker** — `final = w_sem·semantic + w_fresh·freshness + w_auth·authority + w_cred·credibility`,
-   using the weights from step 1.
-
-6. **Answer Generation** — tried in priority order: Anthropic → OpenAI →
-   Groq → DeepSeek → built-in extractive fallback. Any one key is
-   enough; Groq/DeepSeek mean you can get a real synthesized, cited
-   answer with zero cost, not just the extractive summary. Setting a
-   key here reuses the same key from Stage 1 automatically — no double
-   configuration needed. With no key at all, a deterministic extractive
-   summary of the top sources is returned instead — the app never
-   breaks due to a missing key.
-
-### Why LLM-first for query understanding
-
-A fixed keyword table has a hard ceiling: it can only recognize domains
-and phrasings it was explicitly told about in advance, and it can
-misfire in hard-to-predict ways (e.g. a generic word like `"update"`
-being tied to one domain can misclassify an unrelated query, and
-raw/unfiltered query text sent to a search engine can collide with an
-unrelated but far more popular query). An LLM has no such ceiling: it
-reasons about arbitrary topics and typos using general knowledge, and
-proposes the ranking weights directly per query instead of mapping to
-one of a handful of pre-defined domains.
-
-The rule-based analyzer still ships and still runs automatically
-whenever no LLM key is configured, so the project's zero-cost,
-zero-key guarantee is unchanged — you just get a materially better
-Stage 1 the moment you add a free Groq key.
-
-
-
----
-
-## Configuring things (`.env`)
-
-| Variable | Default | Purpose |
+| Variable | Default | Description |
 |---|---|---|
-| `GROQ_API_KEY` / `DEEPSEEK_API_KEY` | empty | Optional: powers query understanding (Stage 1) AND answer generation (Stage 11) via LLM instead of the rule-based/extractive fallbacks. Groq recommended (genuinely free tier) |
-| `QUERY_UNDERSTANDING_MODE` | `auto` | `auto` (LLM if key present, else rule-based) \| `llm` (force, errors without a key) \| `rule-based` (force, for ablation) |
-| `EMBEDDING_MODE` | `tfidf` | `tfidf` (free/instant) or `sentence-transformers` (semantic, needs extra install) |
-| `FRESHNESS_DECAY` | `exponential` | `linear` \| `exponential` \| `logistic` \| `piecewise` |
-| `FRESHNESS_LAMBDA_DAYS` | `3.0` | Decay speed for exponential |
-| `TOP_K_RESULTS` | `8` | How many ranked sources to return |
-| `MAX_URLS_TO_FETCH` | `10` | How many search results to attempt fetching |
-| `NEWSAPI_KEY` / `TAVILY_API_KEY` | empty | Optional extra search providers |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | empty | Optional LLM-generated (vs extractive) final answers, AND usable as a query-understanding provider too |
-
-To use real semantic embeddings instead of TF-IDF:
-```bash
-pip install sentence-transformers
-# then in .env:
-EMBEDDING_MODE=sentence-transformers
-```
+| `QUERY_UNDERSTANDING_MODE` | `auto` | `auto` / `llm` / `rule-based` |
+| `EMBEDDING_MODE` | `tfidf` | `tfidf` / `sentence-transformers` |
+| `FRESHNESS_DECAY` | `exponential` | `linear` / `exponential` / `logistic` / `piecewise` |
+| `GROQ_API_KEY` | — | Free tier, fast |
+| `DEEPSEEK_API_KEY` | — | Cheap, OpenAI-compatible |
+| `OPENAI_API_KEY` | — | Optional |
+| `ANTHROPIC_API_KEY` | — | Optional |
+| `NEWSAPI_KEY` | — | More reliable than DDG |
+| `TAVILY_API_KEY` | — | Web search API |
 
 ---
 
-## API reference
+## Tech Stack
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/health` | GET | Liveness check |
-| `/config` | GET | Shows active configuration + which optional keys are set |
-| `/analyze` | POST `{"query": "..."}` | Runs only query understanding + weight generation (no retrieval) — useful for debugging domain/time-sensitivity detection |
-| `/query` | POST `{"query": "...", "top_k": 8}` | Full pipeline: retrieve → score → rank → generate |
+| Component | Technology |
+|---|---|
+| API backend | FastAPI + Uvicorn |
+| Demo UI | Streamlit |
+| Search | DuckDuckGo (ddgs) · NewsAPI · Tavily |
+| Embeddings | TF-IDF (scikit-learn) · sentence-transformers (optional) |
+| LLM providers | Anthropic · OpenAI · Groq · DeepSeek |
+| Config | pydantic-settings + .env |
+| Web parsing | BeautifulSoup4 + lxml |
 
 ---
 
-## Notes & limitations
+## Notes & Limitations
 
-- Free web search (DuckDuckGo via `ddgs`) can occasionally rate-limit;
-  add `TAVILY_API_KEY` or `NEWSAPI_KEY` for more reliable volume.
-- Metadata extraction (published date/author) depends on how well a
-  given site tags its HTML; pages with no discoverable date get a
-  neutral (0.5) freshness score rather than being penalized.
-- This is a research prototype, not a production scraper — respect
-  target sites' `robots.txt` and rate limits if you scale usage up.
+- Free web search (DuckDuckGo via `ddgs`) can occasionally rate-limit; add `TAVILY_API_KEY` or `NEWSAPI_KEY` for more reliable volume.
+- Metadata extraction (published date/author) depends on how well a given site tags its HTML; pages with no discoverable date get a neutral (0.5) freshness score rather than being penalized.
+- This is a research prototype, not a production scraper — respect target sites' `robots.txt` and rate limits if you scale usage up.
+
+---
+
+## Author
+
+**Kakarla Sai Swaroop** — M25DE1023, IIT Jodhpur M.Tech Data Engineering
