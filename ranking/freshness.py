@@ -23,6 +23,24 @@ from app.config import get_settings
 
 NEUTRAL_UNKNOWN_DATE_SCORE = 0.5
 
+# math.exp() raises OverflowError for inputs beyond roughly 709 (the
+# limit of a 64-bit float). Any exponent magnitude at or above this is
+# already so extreme that the result would be indistinguishable from
+# 0.0 or 1.0 anyway, so clamping the exponent before calling exp() is
+# mathematically safe -- it changes no real output, it just prevents a
+# crash on inputs that would have produced ~0 or ~1 regardless.
+_MAX_EXP_ARG = 700.0
+
+
+def _safe_exp(x: float) -> float:
+    """exp() that saturates instead of raising OverflowError for very
+    large magnitude inputs (in either direction)."""
+    if x > _MAX_EXP_ARG:
+        x = _MAX_EXP_ARG
+    elif x < -_MAX_EXP_ARG:
+        x = -_MAX_EXP_ARG
+    return math.exp(x)
+
 
 def linear_decay(age_days: float, max_age_days: float) -> float:
     if max_age_days <= 0:
@@ -34,11 +52,11 @@ def exponential_decay(age_days: float, lambda_days: float) -> float:
     if lambda_days <= 0:
         lambda_days = 1.0
     rate = 1.0 / lambda_days
-    return math.exp(-rate * age_days)
+    return _safe_exp(-rate * age_days)
 
 
 def logistic_decay(age_days: float, midpoint_days: float = 7.0, steepness: float = 0.5) -> float:
-    return 1.0 / (1.0 + math.exp(steepness * (age_days - midpoint_days)))
+    return 1.0 / (1.0 + _safe_exp(steepness * (age_days - midpoint_days)))
 
 
 def piecewise_decay(age_days: float) -> float:
@@ -54,7 +72,7 @@ def piecewise_decay(age_days: float) -> float:
         # Linearly drop from 0.6 -> 0.2 over days 7-30.
         return 0.6 - 0.4 * ((age_days - 7) / 23)
     # Long tail: slow exponential decay from 0.2 downward.
-    return 0.2 * math.exp(-(age_days - 30) / 180)
+    return 0.2 * _safe_exp(-(age_days - 30) / 180)
 
 
 def compute_freshness_score(age_days: float, decay_fn: str | None = None) -> float:
