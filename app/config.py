@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     chunk_size_words: int = 220
     chunk_overlap_words: int = 40
 
+    # Max chunks from the SAME source URL allowed to cluster at the top
+    # of the ranked list. Without this, a single long, highly-relevant,
+    # fresh, authoritative page can flood the top-k with several of its
+    # own chunks (they share freshness/authority/credibility scores,
+    # since those are per-document, not per-chunk) and crowd out every
+    # other source. Standard practice in real search/IR systems.
+    max_chunks_per_source: int = 2
+
     # --- Default hybrid ranking weights (used when adaptive weighting
     #     has no stronger opinion). Must sum to ~1.0. ---
     default_weight_semantic: float = 0.45

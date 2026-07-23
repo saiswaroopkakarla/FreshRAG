@@ -24,6 +24,7 @@ still needs to work with zero API keys.
 import logging
 import time
 
+from app.config import get_settings
 from embedding.embedder import compute_relevance_scores
 from embedding.vector_store import ScoredChunk, SessionStore
 from generator.llm import generate_answer
@@ -128,7 +129,7 @@ def run_pipeline(query: str, top_k: int | None = None) -> dict:
 
     # --- Module 11: Hybrid ranking ---
     step_t = time.time()
-    ranked = rank_chunks(store.chunks, weights)
+    ranked = rank_chunks(store.chunks, weights, max_chunks_per_source=get_settings().max_chunks_per_source)
     k = top_k or 8
     top_chunks = ranked[:k]
     timings["ranking_s"] = round(time.time() - step_t, 3)
