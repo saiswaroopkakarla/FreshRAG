@@ -14,6 +14,15 @@ Each run produces experiments/results_<tag>.xlsx. Run it once per
 configuration you want to compare (baseline, each decay function,
 rule-based vs LLM query understanding, etc) -- that's what turns into
 your Comparative Analysis section.
+
+Note on --delay: free-tier search (DuckDuckGo) and free-tier LLM APIs
+(Groq's free tier especially) can rate-limit under a rapid burst of 18
+back-to-back queries, even with the retry/backoff already built into
+search_api.py and generator/llm.py. Increasing --delay spaces requests
+out and reduces (though doesn't guarantee eliminating) rate-limit
+failures. If you still see occasional 502s after this, that's normal
+for a free-tier batch run -- just re-run the script again afterward;
+it overwrites the same file, so failed queries simply get retried.
 """
 
 import argparse
@@ -40,7 +49,7 @@ RESULT_COLUMNS = [
 ]
 
 
-def run_queries(backend_url: str, queries: list[dict], top_k: int) -> list[dict]:
+def run_queries(backend_url: str, queries: list[dict], top_k: int, delay: float) -> list[dict]:
     rows = []
     for q in queries:
         print(f"  querying: {q['query']!r} ...", file=sys.stderr)
@@ -54,6 +63,7 @@ def run_queries(backend_url: str, queries: list[dict], top_k: int) -> list[dict]
             data = resp.json()
         except requests.RequestException as exc:
             print(f"    FAILED: {exc}", file=sys.stderr)
+            time.sleep(delay)
             continue
 
         analysis = data.get("analysis", {})
@@ -75,14 +85,13 @@ def run_queries(backend_url: str, queries: list[dict], top_k: int) -> list[dict]
                 "credibility_score": scores.get("credibility", ""),
                 "final_score": scores.get("final", ""),
             })
-        time.sleep(0.5)  # be polite to the search backend between queries
+        time.sleep(delay)  # be polite to free-tier search/LLM rate limits between queries
     return rows
 
 
 def write_workbook(rows: list[dict], run_tag: str, out_path: Path) -> None:
     wb = Workbook()
 
-    # --- Instructions sheet ---
     instr = wb.active
     instr.title = "Instructions"
     instr["A1"] = "How to fill in this spreadsheet"
@@ -97,10 +106,6 @@ def write_workbook(rows: list[dict], run_tag: str, out_path: Path) -> None:
         "  1 = Barely related: mentions the topic but doesn't really help",
         "  0 = Irrelevant: off-topic or wrong",
         "",
-        "Example (already filled in as a guide):",
-        "  Row for 'Why is Apple stock falling today?', a Reuters article from today about Apple's",
-        "  earnings guidance -> human_relevance = 3",
-        "",
         "Once every row has a number in that column, save the file and run:",
         f"  python experiments/compute_metrics.py experiments/{out_path.name}",
         "",
@@ -108,13 +113,17 @@ def write_workbook(rows: list[dict], run_tag: str, out_path: Path) -> None:
         "(e.g. different FRESHNESS_DECAY settings, or QUERY_UNDERSTANDING_MODE=rule-based",
         "vs auto), using a different --tag each time, then pass multiple result files to",
         "compute_metrics.py together to get a side-by-side comparison table.",
+        "",
+        "If some queries FAILED (502/500 errors) due to free-tier search or LLM",
+        "rate limits, just re-run this same command again -- it overwrites the",
+        "same file, so previously-successful rows get regenerated and failed",
+        "ones get another chance.",
     ]
     for i, line in enumerate(lines, start=2):
         instr[f"A{i}"] = line
         instr[f"A{i}"].font = BODY_FONT
     instr.column_dimensions["A"].width = 100
 
-    # --- Results sheet ---
     ws = wb.create_sheet("Results")
     for col_idx, col_name in enumerate(RESULT_COLUMNS, start=1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
@@ -145,11 +154,14 @@ def main():
     parser.add_argument("--backend-url", default="http://localhost:8000")
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--queries-file", default=str(Path(__file__).parent / "queries.json"))
+    parser.add_argument("--delay", type=float, default=2.0,
+                         help="Seconds to wait between queries (default 2.0). Increase this if you see "
+                              "502 errors from search/LLM rate-limiting under free-tier keys.")
     args = parser.parse_args()
 
     queries = json.loads(Path(args.queries_file).read_text())["queries"]
-    print(f"Running {len(queries)} queries against {args.backend_url} (tag={args.tag}) ...", file=sys.stderr)
-    rows = run_queries(args.backend_url, queries, args.top_k)
+    print(f"Running {len(queries)} queries against {args.backend_url} (tag={args.tag}, delay={args.delay}s) ...", file=sys.stderr)
+    rows = run_queries(args.backend_url, queries, args.top_k, args.delay)
 
     if not rows:
         print("No results were returned for any query -- is the backend running and reachable?", file=sys.stderr)
